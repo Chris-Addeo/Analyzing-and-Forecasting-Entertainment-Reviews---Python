@@ -1,0 +1,895 @@
+"""
+Capstone Project - Analyzing and Forecasting Entertainment Reviews
+
+@Author: Christopher Addeo
+"""
+#%% Notes
+
+# The variable names p and t are reused, so use the "run current cell" for statistical test portions
+# Make sure to load the cell 0B for any portions with confidence intervals for function calls to work
+# There is more analysis and explanations in a lot of this code
+"""
+Ratings of 400 movies from 1097 participants in CSV file “movieReplicationSet.csv”. 
+Columns 1-400: Movie ratings (of 0-4/missing)
+Columns 401-477: Personal questions
+"""
+
+"""
+Format: The project is 10 (equally-weighed, grade-wise) questions.
+Each answer should include some paragraph of text (describing what you did/found), 
+a figure that illustrates the findings and some numbers 
+(e.g. test statistics, confidence intervals or p-values). 
+Doc should be 4-6 pages long. About 1/2 page per question is reasonable. 
+Please save as a pdf.
+
+Open your document with a brief statement as to how you handled dimension reduction, data
+cleaning and data transformation, as this will apply to all answers. 
+"""
+
+#%% 0) Loading the Tools and Libraries Used
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import stats
+import statistics as st
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_samples
+from scipy.stats import bootstrap
+from sklearn.linear_model import LogisticRegression
+from scipy.special import expit # this is the logistic sigmoid function
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score
+
+#%% 0A) Load Data
+
+data = np.genfromtxt('movieReplicationSet.csv',delimiter=',', skip_header = 1)  # Array of data excluding headers
+df = pd.read_csv('movieReplicationSet.csv')                                     # Dataframe of data with headers
+
+#%% 0B) Function that Creates Mean, SD, SEM, and Confidence Intervals
+
+def meanCI(movie,confidence):
+    mean, standardError, standardDeviation = np.mean(movie), stats.sem(movie), st.stdev(movie)
+    confToMulti = lambda confidence : 2 if confidence == 95 else 3
+    print("Mean: " + str(round(mean,3)) + ", Interval: " + str(round(round(mean,3) - standardDeviation * confToMulti(confidence),3)) + " to " + str(round(round(mean,3) + standardDeviation * confToMulti(confidence),3)))
+    print("STD:", round(standardDeviation,4))
+    print("SEM:", standardError)
+
+"meanCI(specificMovieRatingsArray, 95)" # Example, Does not work with NaNs
+
+#%% 1) Relationship between Sensation Seeking and Movie Experience
+
+"Q1: What is the relationship between sensation seeking and movie experience?"
+
+# Goals:
+# A) Split categories into 2 arrays, then remove NaNs, 
+# B) (Dimension Reduction) Conduct z-score, PCA, and get Eigenvalues, Eigenvectors, Rotate/Transform Data
+# C) (Graphics) Create Scree Plots
+# D) Factor Selection / Determine Threshholds
+# E) Interpreting the Factors
+# F) Creating a correlation for sensation seeking and movie experience
+
+#%% 1A) Split Sensation Seeking and Movie Experience into Separate Arrays, then Remove NaNs
+
+#Columns 401-420: These columns contain self-assessments on sensation seeking behaviors (1-5)
+#Columns 465-474: These columns contain self-reported movie experience ratings (1-5)
+""" print("Sensation Behaviors: \n", df.columns[400:420], "\n \n Movie Experiences: \n", df.columns[464:474]) """
+
+allSensationBehaviors = data[:,400:420]
+allMovieExperiences = data[:, 464:474]
+allSensationBehaviors2 = allSensationBehaviors[~(np.isnan(allSensationBehaviors).any(axis=1))]
+allMovieExperiences2 = allMovieExperiences[~(np.isnan(allMovieExperiences).any(axis=1))]
+
+#%% 1B) Z-Score, PCA, Eigenvalues, Eigenvectors
+
+# Z-Score the data
+zscoredSensation = stats.zscore(allSensationBehaviors2)
+zscoredExperience = stats.zscore(allMovieExperiences2)
+
+# Initialize PCA Object and Fit it to the Data
+pcaSensation = PCA().fit(zscoredSensation)
+pcaExperience = PCA().fit(zscoredExperience)
+
+# Get Eigenvectors and Eigenvalues (Loadings)
+eigValsSensation, sensationLoadings = pcaSensation.explained_variance_, pcaSensation.components_
+eigValsExperience, experienceLoadings = pcaExperience.explained_variance_, pcaExperience.components_
+
+# Rotate/Transform Data (Order by Decreasing Eigenvalue)
+rotatedSensationData = pcaSensation.fit_transform(zscoredSensation)
+rotatedExperienceData = pcaExperience.fit_transform(zscoredExperience)
+
+# Convert Eigenvalues to Variance Explained
+sensationVarExplained = eigValsSensation/sum(eigValsSensation)*100
+experienceVarExplained =eigValsExperience/sum(eigValsExperience)*100
+
+# Display this for each factor
+for ii in range(len(sensationVarExplained)):
+    print(sensationVarExplained[ii].round(3))
+print()
+for ii in range(len(experienceVarExplained)):
+    print(experienceVarExplained[ii].round(3))
+
+# variance explained is the proportion of the data explained by a certain point
+# meaning that the first ones represent/accounts for x% of the variance
+
+#%% 1C) Creating a Scree Plot for Sensation Behaviors
+
+numSensationQuestions = 20
+
+# Sensation graph
+xS = np.linspace(1,numSensationQuestions,numSensationQuestions) #xS for succ-sess!
+plt.bar(xS, eigValsSensation, color='sandybrown')
+plt.plot([0,numSensationQuestions],[1,1],color='mediumpurple', linewidth=4) # Orange Kaiser criterion line for the fox
+plt.xlabel('Principal component', fontsize=20)
+plt.ylabel('Eigenvalue', fontsize=20)
+plt.title('Sensation Behaviors', fontsize=30)
+plt.show()
+
+#%% 1C Part 2) Creating a Scree Plot for Movie Experiences
+
+numExperienceQuestions = 10
+
+# Experiences graph
+xE = np.linspace(1,numExperienceQuestions,numExperienceQuestions)
+plt.bar(xE, eigValsExperience, color='lightgreen')
+plt.plot([0,numExperienceQuestions],[1,1],color='firebrick', linewidth=4) # Orange Kaiser criterion line for the fox
+plt.xlabel('Principal component', fontsize=20)
+plt.ylabel('Eigenvalue', fontsize=20)
+plt.title('Movie Experiences', fontsize=30)
+plt.show()
+
+#%% 1D) Factor Selection / Determine Threshholds
+
+kaiserThreshold = 1
+print('Number of sensation factors selected by Kaiser criterion:', np.count_nonzero(eigValsSensation > kaiserThreshold))
+print('Number of movie factors selected by Kaiser criterion:', np.count_nonzero(eigValsExperience > kaiserThreshold), '\n')
+
+# 2) The "elbow" criterion: Pick only factors left of the bend. 
+# Here, this would yield 1 factor.
+print('Number of factors selected by elbow criterion for sensations: 3 to 5; and movie experiences: 2 \n') #Due to visual inspection by primate
+
+# 3) Number of factors that account for 90% of the variance (Eigenvalues that 
+threshold = 90
+sensationEigSum = np.cumsum(sensationVarExplained)
+experienceEigSum = np.cumsum(experienceVarExplained)
+print('Number of sensation factors to account for at least 90% variance:', np.count_nonzero(sensationEigSum < threshold) + 1)
+print('Number of movie factors to account for at least 90% variance:', np.count_nonzero(experienceEigSum < threshold) + 1)
+
+# you can pick any of these, they are all valid, but you have to interpret each dimension so less is more
+
+#%% 1E) Interpreting the Factors for Sensation Behaviors
+
+" Going with Kaiser Criterion, so pick top 3-4 factors "
+
+whichPrincipalComponent = 1 # Select and look at one factor at a time 
+plt.bar(xS,sensationLoadings[whichPrincipalComponent,:]*-1, color='sandybrown') # note: eigVecs multiplied by -1 because the direction is arbitrary
+plt.xlabel('Question', fontsize=20)
+plt.ylabel('Loading', fontsize=20)
+plt.title('Sensation Behaviors', fontsize=30)
+plt.show() # Show bar plot
+""" print("Sensation Behaviors: \n", df.columns[400:420]) """ # Unquote to print questions
+
+# Questions 4, 9, 5, 6, and 8 have the highest bars
+# Will go with questions top 3 for simplicity while following the elbow rule
+# Q4: I enoy impulse shopping                                       (implies spending habits)
+# Q9: I enjoy going to large music or dance festivals               (implies extraversion/outgoing)
+# Q5: I sometimes go out on weeknights even if I have work to do    (implies easy going, not rigid, work life balance)
+
+# Bad questions were have you bungee jumped, have you ever parachuted, have you ever been sky diving
+# Implies events that might cost a lot of money or take a lot of will power are not good rating predictors
+
+#%% 1E Part 2) Interpreting the Factors for Movie Experiences
+
+" Going with Kaiser Criterion, so pick top 2 factors "
+
+whichPrincipalComponent = 1 # Select and look at one factor at a time 
+plt.bar(xE,experienceLoadings[whichPrincipalComponent,:]*-1, color='lightgreen') # note: eigVecs multiplied by -1 because the direction is arbitrary
+plt.xlabel('Question', fontsize=20)
+plt.ylabel('Loading', fontsize=20)
+plt.title('Experience Behaviors', fontsize=30)
+plt.show() # Show bar plot
+""" print("Movie Experiences: \n", df.columns[464:474]) """  # Unquote to print questions
+
+# Questions 7 and 8 have the highest bars
+# Q7: The emotions on the screen "rub off" on me - for instance if something sad 
+#     is happening I get sad or if something frightening is happening I get scared              (implies emotional, wears heart on their wrist)
+# Q8: When watching a movie I get completely immersed in the alternative reality of the film    (implies they get easily attached to/invested in things)
+
+# Bad questions were I have trouble following a movie, forget it a few days after seeing it, I have a hard time keeping track of events that happened earlier
+# Implies that questions regarding memory of the movies events itself or if it is easy to follow are bad rating predictors
+
+#%% 1F) Correlating the Transformed Data
+
+# do questions 4,9,5 for sensations, 7+8 for Movie experience, 
+
+# Correlation between sensation Q4 and the Movie Experience Qs 7,8
+corrGroup1 = np.array([allSensationBehaviors[:,3],allMovieExperiences[:,6]]).transpose()
+corrGroup1 = corrGroup1[~(np.isnan(corrGroup1).any(axis=1))]
+r1 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.087
+corrGroup2 = np.array([allSensationBehaviors[:,3],allMovieExperiences[:,7]]).transpose()
+corrGroup2 = corrGroup2[~(np.isnan(corrGroup2).any(axis=1))]
+r2 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.086
+
+# Correlation between sensation Q9 and the Movie Experience Qs 7,8
+corrGroup1 = np.array([allSensationBehaviors[:,8],allMovieExperiences[:,6]]).transpose()
+corrGroup1 = corrGroup1[~(np.isnan(corrGroup1).any(axis=1))]
+r3 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.148
+corrGroup2 = np.array([allSensationBehaviors[:,8],allMovieExperiences[:,7]]).transpose()
+corrGroup2 = corrGroup2[~(np.isnan(corrGroup2).any(axis=1))]
+r4 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.148
+
+# Correlation between sensation Q5 and the Movie Experience Qs 7,8
+corrGroup1 = np.array([allSensationBehaviors[:,4],allMovieExperiences[:,6]]).transpose()
+corrGroup1 = corrGroup1[~(np.isnan(corrGroup1).any(axis=1))]
+r5 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.004
+corrGroup2 = np.array([allSensationBehaviors[:,4],allMovieExperiences[:,7]]).transpose()
+corrGroup2 = corrGroup2[~(np.isnan(corrGroup2).any(axis=1))]
+r6 = np.corrcoef(corrGroup1[:,0], corrGroup1[:,1]) # r=~0.004
+
+# Conclusions: All of these questions have a slightly positive correlation, however
+# Question 9 seems to have the stongest correlation with the movie experience questions
+
+#%% 2) Evidence for Personality Types; Quantitative and Narrative Characteristics
+
+"Q2: Is there evidence of personality types based on the data of these research participants? If so, characterize these types both quantitatively and narratively."
+
+# Goals:
+# A) Isolate the personality questions and clean the data
+# B) Create and Graph a Correlation Matrix
+# C) Perform Dimension Reduction and Create a Scree Plot
+# D) Interpreting the Factors for Personalities
+# E) Create Transformed Data with K-Clusters using Silhouette Scores
+# F) Find Numerical Quantifies for Characteristics
+
+#%%# 2A) Isolate Personality Questions, Heat Map of Raw Data, Clean Data
+
+# Get the raw data
+allPersonalityTypes = data[:,420:464]
+
+# Visual Image of the Raw Data
+plt.imshow(allPersonalityTypes) # Visualize the array as an image (heatmap)
+plt.xlabel('Personality Questions')
+plt.ylabel('Responses')
+plt.colorbar() # Add color bar 
+plt.show() 
+
+# Remove NaNs
+allPersonalityTypes2 = allPersonalityTypes[~(np.isnan(allPersonalityTypes).any(axis=1))]
+
+#%% 2B) Create and Graph a Correlation Matrix
+
+# Get correlation matrix and graph it
+rP = np.corrcoef(allPersonalityTypes2,rowvar=False)
+plt.imshow(rP) 
+plt.colorbar()
+plt.show()
+
+#%% 2C) Dimension Reduction and Scree Plot
+# Z-score the data:
+personalityZScored = stats.zscore(allPersonalityTypes2)
+
+# Initialize PCA object and fit to our data:
+pca = PCA().fit(personalityZScored)
+
+# Eigenvalues:
+eigValsPersonalities = pca.explained_variance_
+
+# Loadings (eigenvectors):
+personalityLoadings = pca.components_*-1
+
+# Rotated/Transformed Data:
+origDataNewCoordinates = pca.fit_transform(personalityZScored)*-1
+
+# Scree plot:
+numPredictors = 44
+plt.bar(np.linspace(1,numPredictors,numPredictors),eigValsPersonalities, color='deepskyblue')
+plt.plot([0,numPredictors],[1,1],color='mediumpurple', linewidth=4) # Orange Kaiser criterion line for the fox
+plt.title('Scree Plot', fontsize=30)
+plt.xlabel('Principal Components', fontsize=20)
+plt.ylabel('Eigenvalues', fontsize=20)
+plt.show()
+
+# This shows us that there are 4-8 meaningful factors
+
+kaiserThreshold = 1
+print('Number of sensation factors selected by Kaiser criterion:', np.count_nonzero(eigValsPersonalities > kaiserThreshold))
+
+#%% 2D) Interpreting the Factors for Personalities
+
+numPersonalityQuestions = 44
+xP = np.linspace(1,numPersonalityQuestions,numPersonalityQuestions)
+whichPrincipalComponent = 1 # Select and look at one factor at a time 
+plt.bar(xP,personalityLoadings[whichPrincipalComponent,:]*-1, color='indianred') # note: eigVecs multiplied by -1 because the direction is arbitrary
+plt.xlabel('Question', fontsize=20)
+plt.ylabel('Loading', fontsize=20)
+plt.title('Personality Questions', fontsize=30)
+plt.show() # Show bar plot
+print("Personality Questions: \n", df.columns[420+8], "\n", df.columns[420+23], "\n", df.columns[420+33], "\n", df.columns[420+40])  # Unquote to print questions
+print("Personality Questions: \n", df.columns[420:444])  # Unquote to print questions
+
+# This shows us there are 4 really important questions, 9, 24, 34, and 41
+# Q9:  Is relaxed/handles stress well           # Calm or Erratic
+# Q24: Is emotionally stable/not easily upset   # Emotionally Stable or Not
+# Q34: Remains calm in tense situations         # Dependable or Not
+# Q41: Has few artistic interests               # Creative or Not
+
+# Bad questions are about worry, disorginization (basically negative phrasing bad variance)
+
+#%% 2E) Basic Scatterplot, No Clusters
+
+plt.plot(origDataNewCoordinates[:,0],origDataNewCoordinates[:,1],'o',markersize=3)
+plt.xlabel('Extraversion')
+plt.ylabel('Tranquility / Emotional Stability')
+plt.show() 
+
+#%% 2E Part 2) Create Silhouette Scores
+
+numClusters = 9 # how many clusters are we looping over? (from 2 to 10)
+sSum = np.empty([numClusters,1])*np.NaN # init container to store sums
+
+xP = np.column_stack((origDataNewCoordinates[:,0],origDataNewCoordinates[:,1]))
+
+# Compute kMeans for each k:
+for ii in range(2, numClusters+2): # Loop through each cluster (from 2 to 10)
+    kMeans = KMeans(n_clusters = int(ii)).fit(xP) # compute kmeans using scikit
+    cId = kMeans.labels_ # vector of cluster IDs that the row belongs to
+    cCoords = kMeans.cluster_centers_ # coordinate location for center of each cluster
+    s = silhouette_samples(xP,cId) # compute the mean silhouette coefficient of all samples
+    sSum[ii-2] = sum(s) # take the sum
+    # Plot data:
+    plt.subplot(3,3,ii-1)
+    plt.hist(s,bins=20, color='slateblue') 
+    plt.xlim(-0.2,1)
+    plt.ylim(0,250)
+    plt.xlabel('Silhouette score')
+    plt.ylabel('Count')
+    plt.title('Sum: {}'.format(int(sSum[ii-2]))) # sum rounded to nearest integer
+    plt.tight_layout() # adjusts subplot 
+
+#%% 2E Part 3) Create Silhouette Score Graphic
+
+# Plot the sum of the silhouette scores as a function of the number of clusters, to make it clearer what is going on
+plt.plot(np.linspace(2,numClusters,numClusters),sSum, color='crimson', linewidth=4)
+plt.xlabel('Number of clusters')
+plt.ylabel('Sum of silhouette scores')
+plt.show() # Maximum number of clusters is 2
+
+#%% 2E Part 4) Create Scatterplot with Cluster
+numClusters = 2
+kMeans = KMeans(n_clusters = numClusters).fit(xP) 
+cId = kMeans.labels_ 
+cCoords = kMeans.cluster_centers_ 
+
+# Plot the color-coded data:
+
+for ii in range(numClusters):
+    plotIndex = np.argwhere(cId == int(ii))
+    plt.plot(xP[plotIndex,0],xP[plotIndex,1],'o',markersize=5)
+    plt.plot(cCoords[int(ii-1),0],cCoords[int(ii-1),1],'o',markersize=10,color='black')  
+    plt.xlabel('Extraversion')
+    plt.ylabel('Tranquility / Emotional Stability')
+
+#%% 2F) Finding the Numerical Representations for Personality Types
+
+# Questions 9, 24, 34, and 41 are our personality predictors
+q9Median = np.nanmedian(allPersonalityTypes[:, 8])
+q24Median = np.nanmedian(allPersonalityTypes[:, 23])
+q34Median = np.nanmedian(allPersonalityTypes[:, 33])
+q41Median = np.nanmedian(allPersonalityTypes[:, 40])
+print("Here are question 9, 24, 34, and 41s medians:", q9Median, q24Median, q34Median, q41Median)
+# Scores higher than the medians means they are categorized with the personality trait
+# a score lower than the median means they are categorized with the opposite of the question
+
+#%% 3) Relationship between movie popularity and ratings
+
+"Q3: Are movies that are more popular rated higher than movies that are less popular?"
+
+# Goals:
+# A) Find popularity of movies
+# B) Find a central tendency of movies (median)
+# C) Make a correlation between the two categories
+# D) Conduct a statistical test (t-test)
+# E) (The Question's Graphic) Graph the correlation of the categories with line of best fit
+
+#%% 3A and 3B) Find Movie Popularity and Median Ratings
+
+movieViewership = np.zeros(400)
+medianMovieRatings = np.zeros(400)
+meanMovieRatings = np.zeros(400)    # Used for the scatter plot
+
+# for loop to find total movie ratings and medians for each column in data[]
+for ii in range(400):
+    movieViewership[ii] = np.count_nonzero(np.isfinite(data[:,ii]))
+    medianMovieRatings[ii] = np.nanmedian(data[:,ii])
+    meanMovieRatings[ii] = np.nanmean(data[:,ii])
+
+#%% 3C and 3D) Find Correlation and Statistical Significance
+
+# Perform a linear correlation between viewrship and popularity
+r = np.corrcoef(movieViewership, medianMovieRatings) # r = ~0.623
+
+# Perform an independent samples t-test
+t, p = stats.ttest_ind(movieViewership, medianMovieRatings) # t = ~24.78, p = ~5.846*e-101
+# The p value is both less than an alpha of .05 and .01, so it is highly statistically significant
+# This suggests that there is a direct, positive relationship between movie popularity and ratings
+
+#%% 3E) Creating a Graphic for the Data (Correlation with Line of Best Fit)
+
+plt.scatter(movieViewership, meanMovieRatings, s=10) 
+plt.title('Correlation Between Movie Popularity and Ratings')
+plt.xlabel('Popularity')
+plt.ylabel('Ratings')
+plt.plot(np.unique(movieViewership), np.poly1d(np.polyfit(movieViewership, medianMovieRatings, 1))(np.unique(movieViewership)), color='red')
+plt.show()
+
+#%% 4) Are Enjoyment Levels of Shrek Gendered?
+
+"Q4: Is enjoyment of ‘Shrek (2001)’ gendered, i.e. do male and female viewers rate it differently?"
+
+#Goals: 
+# A) Split the shrek viewers by gender, then remove nans
+# B) Find the central tendencies (mean and median)
+# C) Conduct a statistical test (t-test)
+# D) (The Question's Graphic) Create Bar Plots with Confidence Intervals Displayed
+       
+#%% 4A) Split the Shrek viewers by gender, then remove nans
+
+"print(df.columns.tolist().index('Shrek (2001)'))"  #index  = 87
+shrekRatings = data[:,87]
+genderIdentity = data[:,474]
+
+femaleCounter = 0
+maleCounter = 0
+" Create for loop to find number of people from each gender "
+for ii in range(1097):
+    if genderIdentity[ii] == 1:
+        femaleCounter += 1
+    elif genderIdentity[ii] == 2:
+        maleCounter += 1
+
+femaleRespondentRatings = np.zeros(femaleCounter)
+maleRespondentRatings = np.zeros(maleCounter)
+" Create for loop to split ratings up by gender identity "
+femaleCounter = 0
+maleCounter = 0
+for ii in range(1097):
+    if genderIdentity[ii] == 1:
+        femaleRespondentRatings[femaleCounter] = shrekRatings[ii]
+        femaleCounter += 1
+    elif genderIdentity[ii] == 2:
+        maleRespondentRatings[maleCounter] = shrekRatings[ii]
+        maleCounter += 1
+
+# Remove nans
+femaleRespondentRatings = femaleRespondentRatings[np.isfinite(femaleRespondentRatings)]
+maleRespondentRatings = maleRespondentRatings[np.isfinite(maleRespondentRatings)]
+
+#%% 4B and 4C) Find the Median, Confidence Intervals, and Test if Difference is Statistically Significant
+
+femaleMedianScore = np.median(femaleRespondentRatings)
+maleMedianScore = np.median(maleRespondentRatings)
+
+t, p = stats.ttest_ind(femaleRespondentRatings, maleRespondentRatings) # t = ~1.102, p = ~0.271
+# The difference is not statistically significant
+# Thus, we fail to reject that there is no difference between enjoyment levels of shrek by gender
+
+meanCI(femaleRespondentRatings, 95) # Interval is 3.088 to 3.222
+meanCI(maleRespondentRatings, 95) # Interval is 2.977 to 3.189
+# The confidence intervals overlap with each other
+femaleSTD = 0.9065
+maleSTD = 0.8250
+
+#%% 4D) Creating a Graphic for the Data (Bar Plot with Confidence Intervals)
+
+# Create lists for the plot
+genders = ['Women', 'Men']
+colours = ['red','blue']
+x_pos = np.arange(len(genders))
+shrekMedianRatings = [femaleMedianScore, maleMedianScore]
+error = [femaleSTD, maleSTD]
+
+# Build the plot
+fig, ax = plt.subplots()
+ax.bar(x_pos, shrekMedianRatings, yerr=error, align='center', color=colours, alpha=.5, ecolor='black', capsize=10)
+ax.set_ylabel('Ratings of Shrek')
+ax.set_xticks(x_pos)
+ax.set_xticklabels(genders)
+ax.set_title('Enjoyment Levels of Shrek by Gender')
+ax.yaxis.grid(True)
+
+# Save the figure and show
+plt.tight_layout()
+plt.show()
+
+#%% 5) Siblings Impact on Enjoyment of Lion King
+
+"Q5: Do people who are only children enjoy ‘The Lion King (1994)’ more than people with siblings?"
+     
+# Goals:    
+# A) Split Lion-King viewers by sibling status, then remove nans
+# B) Find the central tendencies (mean and median)
+# C) Conduct a statistical test (t-test)
+# D) (The Question's Graphic) Create Histograms Distributions
+
+#%% 5A) Split the Lion-King viewers by number of siblings, then remove nans
+
+"print(df.columns.tolist().index('The Lion King (1994)'))"  #index  = 220
+
+lionKingRatings = data[:,220]
+siblingIdentity = data[:,475]
+
+noSiblings = 0   # Counters
+hasSiblings = 0
+" Create for loop to find number of people with/without siblings "
+for ii in range(1097):
+    if siblingIdentity[ii] == 0:
+        noSiblings += 1
+    elif siblingIdentity[ii] == 1:
+        hasSiblings += 1
+
+noSiblingsRatings = np.zeros(noSiblings)
+hasSiblingsRatings = np.zeros(hasSiblings)
+
+" Create for loop to split ratings up by number of siblings "
+noSiblings = 0
+hasSiblings = 0
+for ii in range(1097):
+    if siblingIdentity[ii] == 0:
+        noSiblingsRatings[noSiblings] = lionKingRatings[ii]
+        noSiblings += 1
+    elif siblingIdentity[ii] == 1:
+        hasSiblingsRatings[hasSiblings] = lionKingRatings[ii]
+        hasSiblings += 1
+
+# Remove nans
+noSiblingsRatings = noSiblingsRatings[np.isfinite(noSiblingsRatings)]
+hasSiblingsRatings = hasSiblingsRatings[np.isfinite(hasSiblingsRatings)]
+
+#%% 5B and 5C) Find the Median, Confidence Intervals, and Test if Difference is Statistically Significant
+
+noSiblingsMedianScore = np.median(noSiblingsRatings)
+hasSiblingsMedianScore = np.median(hasSiblingsRatings)
+
+t, p = stats.ttest_ind(noSiblingsRatings, hasSiblingsRatings) # t = ~2.054, p = ~0.040
+# The difference is statistically significant
+
+#%% 5D) Creating a Graphic for the Data (Histogram Distributions)
+
+fig, [ax1,ax2] = plt.subplots(2, sharey=True, tight_layout=True)
+l1 = ax1.hist(noSiblingsRatings, bins=10, color='orange', alpha=0.75, label='No Siblings')
+ax1.legend(loc="upper left", fontsize=20)
+ax1.set_ylabel('Sample Size', fontsize=20)
+ax1.set_xlabel('Ratings', fontsize=20)
+
+l2 = ax2.hist(hasSiblingsRatings, bins=10, color='purple', alpha=0.7, label='Has Siblings')
+ax2.legend(loc="upper left", fontsize=20)
+ax2.set_ylabel('Sample Size', fontsize=20)
+ax2.set_xlabel('Ratings', fontsize=20)
+fig.suptitle('Enjoyment Levels of Lion King by Sibling Status', fontsize=30)
+
+#%% 6) Enjoyment Levels of Wolf of Wall Street based on Watching Movies Alone or Socially
+
+"Q6: Do people who like to watch movies socially enjoy ‘The Wolf of Wall Street (2013)’ more than those who prefer to watch them alone?"
+
+# Goals:
+# A) Split Wolf-of-Wall-Street viewers by social-movie-watching preference, then remove nans
+# B) Find the central tendencies (mean and median)
+# C) Do statistical tests, compare confidence intervals (95%, alpha=.05)
+# E) (The Question's Graphic) Create Histograms with Confidence Intervals Displayed
+
+#%% 6A) Split the Wolf-of-Wall-Street viewers by social-watching preference, then remove nans
+
+"print(df.columns.tolist().index('The Wolf of Wall Street (2013)'))"  #index  = 357
+wowRatings = data[:,357]
+watchingPreference = data[:,476]
+
+aloneCounter = 0
+neutralCounter = 0
+socialCounter = 0
+" Create for loop to find number of people from each social viewing status "
+for ii in range(1097):
+    if watchingPreference[ii] == 1:
+        aloneCounter += 1
+    elif watchingPreference[ii] == 0:
+        neutralCounter += 1
+    else:
+        socialCounter += 1
+
+aloneRespondentRatings = np.zeros(aloneCounter)
+neutralRespondentRatings = np.zeros(aloneCounter)
+socialRespondentRatings = np.zeros(socialCounter)
+" Create for loop to split ratings up by preferred viewing status "
+aloneCounter = 0
+neutralCounter = 0
+socialCounter = 0
+for ii in range(1097):
+    if watchingPreference[ii] == 1:
+        aloneRespondentRatings[aloneCounter] = wowRatings[ii]
+        aloneCounter += 1
+    elif watchingPreference[ii] == 0:
+        neutralRespondentRatings[neutralCounter] = wowRatings[ii]
+        neutralCounter += 1
+    else:
+        socialRespondentRatings[socialCounter] = wowRatings[ii]
+        socialCounter += 1
+
+# Remove nans
+aloneRespondentRatings = aloneRespondentRatings[np.isfinite(aloneRespondentRatings)]
+neutralRespondentRatings = neutralRespondentRatings[np.isfinite(neutralRespondentRatings)]
+socialRespondentRatings = socialRespondentRatings[np.isfinite(socialRespondentRatings)]
+
+
+#%% 6B and 6C) Find the Median, Confidence Intervals, and Test if Difference is Statistically Significant
+
+aloneMedianScore = np.median(aloneRespondentRatings)        # 3.5
+neutralMedianScore = np.median(neutralRespondentRatings)    # 2.5
+socialMedianScore = np.median(socialRespondentRatings)      # 3.75
+
+f,p = stats.f_oneway(aloneRespondentRatings, neutralRespondentRatings, socialRespondentRatings) # f = ~83.478, p = ~1.071*e-33
+# The p value is both less than an alpha of .05 and .01, so it is highly statistically significant
+# This suggests that there is a relationship between movie social viewing preferences and movie ratings
+
+t, pt = stats.ttest_ind(aloneRespondentRatings,socialRespondentRatings)     #p = ~0.270
+t, pa = stats.ttest_ind(aloneRespondentRatings,neutralRespondentRatings)    #p = ~2.897*e-34
+t, ps = stats.ttest_ind(socialRespondentRatings,neutralRespondentRatings)   #p = ~0.042
+# Upon further inspection, people who prefer to watch movies alone and socially like WOWS more than those who feel neutral
+# This difference is highly statistically significant on those who prefer to watch it alone
+# However, there is no statistical difference between ratings of WOWS between those who prefer to watch movies socially or alone
+# This could suggest that people who feel strongly in either direction about viewing movies alone or with friends might rate movies higher/more strong
+
+#%% 6D) Creating a Graphic for the Data (Bar Graphs)
+
+# Create lists for the plot
+socialPreference = ['Alone Preference', 'Neutral Preference', 'Social Preference']
+colours = ['palegreen','salmon', 'slateblue']
+x_pos = np.arange(len(socialPreference))
+WOWSMedianRatings = [aloneMedianScore, neutralMedianScore, socialMedianScore]
+
+# Build the plot
+fig, ax = plt.subplots()
+ax.bar(x_pos, WOWSMedianRatings, align='center', color=colours, alpha=.75, ecolor='black', capsize=10)
+ax.set_ylabel('Ratings of Wolf of Wall Street', fontsize=20)
+ax.set_xticks(x_pos)
+ax.set_xticklabels(socialPreference, fontsize=20)
+ax.set_title('Ratings of Wolf of Wall Street by Social-Viewing Preference', fontsize=25)
+ax.yaxis.grid(True)
+
+# Show Figure
+plt.tight_layout()
+plt.show()
+
+#%% 7) Consistency of Quality for Franchise (Star Wars, Harry Potter, The Matrix, Indiana Jones, Jurassic Park, Pirates of the Caribbean, Toy Story, Batman)
+
+"Q7: There are ratings on movies from several franchises ([‘Star Wars’, ‘Harry Potter’, ‘The Matrix’, ‘Indiana Jones’, ‘Jurassic Park’, ‘Pirates of the Caribbean’, ‘Toy Story’, ‘Batman’]) in this dataset. How many of these are of inconsistent quality, as experienced by viewers?"
+
+# Goals:
+# A) Split dataset into 2D arrays for each franchise after getting their indexes
+# B) Create arrays with central tendencies for each franchise (Medians)
+# C) Do statistical tests (t-tests) if needed
+# D) (The Question's Graphic) Create Bar Graphs For Franchises with Inconsistencies
+
+#%% 7A) Get the Index of each Movie Franchise and Split them into Arrays
+
+# Star Wars Arrays
+"print(df.columns.tolist().index('Star Wars: Episode IV - A New Hope (1977)'))"             # Index 21
+"print(df.columns.tolist().index('Star Wars: Episode V - The Empire Strikes Back (1980)'))" # Index 174
+"print(df.columns.tolist().index('Star Wars: Episode VI - The Return of the Jedi (1983)'))" # Index 342
+"print(df.columns.tolist().index('Star Wars: Episode 1 - The Phantom Menace (1999)'))"      # Index 273
+"print(df.columns.tolist().index('Star Wars: Episode II - Attack of the Clones (2002)'))"   # Index 93
+"print(df.columns.tolist().index('Star Wars: Episode VII - The Force Awakens (2015)'))"     # Index 336
+starWarsRatings = np.array([data[:,21],data[:,174],data[:,342],data[:,273],data[:,93],data[:,336]]).transpose()
+
+# Harry Potter Arrays
+"print(df.columns.tolist().index('Harry Potter and the Goblet of Fire (2005)'))"            # Index 387
+"print(df.columns.tolist().index('Harry Potter and the Chamber of Secrets (2002)'))"        # Index 394
+'''print(df.columns.tolist().index("Harry Potter and the Sorcerer's Stone (2001)"))'''      # Index 230
+"print(df.columns.tolist().index('Harry Potter and the Deathly Hallows: Part 2 (2011)'))"   # Index 258
+harryPotterRatings = np.array([data[:,387],data[:,394],data[:,230],data[:,258]]).transpose()
+
+# The Matrix Arrays
+"print(df.columns.tolist().index('The Matrix (1999)'))"             # Index 306
+"print(df.columns.tolist().index('The Matrix Reloaded (2003)'))"    # Index 172
+"print(df.columns.tolist().index('The Matrix Revolutions (2003)'))" # Index 35
+matrixRatings = np.array([data[:,306],data[:,172],data[:,35]]).transpose()
+
+# Indiana Jones Arrays
+"print(df.columns.tolist().index('Indiana Jones and the Raiders of the Lost Ark (1981)'))" # Index 33
+"print(df.columns.tolist().index('Indiana Jones and the Temple of Doom (1984)'))" # Index 32
+"print(df.columns.tolist().index('Indiana Jones and the Last Crusade (1989)'))" # Index 4
+"print(df.columns.tolist().index('Indiana Jones and the Kingdom of the Crystal Skull (2008)'))" # Index 142
+indianaJonesRatings = np.array([data[:,33],data[:,32],data[:,4],data[:,142],]).transpose()
+
+# Jurassic Park Arrays
+"print(df.columns.tolist().index('Jurassic Park (1993)'))"                  # Index 370
+"print(df.columns.tolist().index('The Lost World: Jurassic Park (1997)'))"  # Index 37
+"print(df.columns.tolist().index('Jurassic Park III (2001)'))"              # Index 47
+jurassicParkRatings = np.array([data[:,370],data[:,37],data[:,47]]).transpose()
+
+# Pirates of the Caribbean Arrays
+"""print(df.columns.tolist().index("Pirates of the Caribbean: The Curse of the Black Pearl (2003)"))""" # Index 351
+"""print(df.columns.tolist().index("Pirates of the Caribbean: Dead Man's Chest (2006)"))"""             # Index 75
+"""print(df.columns.tolist().index("Pirates of the Caribbean: At World's End (2007)"))"""               # Index 204
+piratesCaribbeanRatings = np.array([data[:,351],data[:,75],data[:,204],]).transpose()
+
+# Toy Story Arrays
+"print(df.columns.tolist().index('Toy Story (1995)'))"   # Index 276
+"print(df.columns.tolist().index('Toy Story 2 (1999)'))" # Index 157
+"print(df.columns.tolist().index('Toy Story 3 (2010)'))" # Index 171
+toyStoryRatings = np.array([data[:,276],data[:,157],data[:,171]]).transpose()
+
+# Batman Arrays
+"print(df.columns.tolist().index('Batman (1989)'))" # Index 181
+"print(df.columns.tolist().index('Batman & Robin (1997)'))" # Index 46
+"print(df.columns.tolist().index('Batman: The Dark Knight (2008)'))" # Index 235
+batmanRatings = np.array([data[:,181],data[:,46],data[:,235]]).transpose()
+
+#%% 7B) Remove Nans and Determine each Movie+Franchines Medians
+
+# Medians before arrays are shortened do to nan removal
+starWarsMedians = np.nanmedian(starWarsRatings,axis=0)
+harryPotterMedians = np.nanmedian(harryPotterRatings,axis=0)
+matrixMedians = np.nanmedian(matrixRatings,axis=0)
+indianaJonesMedians = np.nanmedian(indianaJonesRatings,axis=0)
+jurassicParkMedians = np.nanmedian(jurassicParkRatings,axis=0)
+piratesCaribbeanMedians = np.nanmedian(piratesCaribbeanRatings,axis=0)
+toyStoryMedians = np.nanmedian(toyStoryRatings,axis=0)
+batmanMedians = np.nanmedian(batmanRatings,axis=0)
+# There are a few minor differences with computing the medians after removing nans which also gets rid of prequel ratings due to higher sample sizes
+
+# Remove nans
+starWarsRatings2 = starWarsRatings[~(np.isnan(starWarsRatings).any(axis=1))]
+harryPotterRatings2 = harryPotterRatings[~(np.isnan(harryPotterRatings).any(axis=1))]
+matrixRatings2 = matrixRatings[~(np.isnan(matrixRatings).any(axis=1))]
+indianaJonesRatings2 = indianaJonesRatings[~(np.isnan(indianaJonesRatings).any(axis=1))]
+jurassicParkRatings2 = jurassicParkRatings[~(np.isnan(jurassicParkRatings).any(axis=1))]
+piratesCaribbeanRatings2 = piratesCaribbeanRatings[~(np.isnan(piratesCaribbeanRatings).any(axis=1))]
+toyStoryRatings2 = toyStoryRatings[~(np.isnan(toyStoryRatings).any(axis=1))]
+batmanRatings2 = batmanRatings[~(np.isnan(batmanRatings).any(axis=1))]
+
+# Medians after arrays are shortened do to nan removal
+starWarsMedians2 = np.median(starWarsRatings2, axis=0)
+harryPotterMedians2 = np.median(harryPotterRatings2,axis=0)
+matrixMedians2 = np.median(matrixRatings2,axis=0)
+indianaJonesMedians2 = np.median(indianaJonesRatings2,axis=0)
+jurassicParkMedians2 = np.median(jurassicParkRatings2,axis=0)
+piratesCaribbeanMedians2 = np.median(piratesCaribbeanRatings2,axis=0)
+toyStoryMedians2 = np.median(toyStoryRatings2,axis=0)
+batmanMedians2 = np.median(batmanRatings2,axis=0)
+
+#%% 7C) Checking for Inconsistiences (Through t-tests) and Building Conclusions
+
+" Star Wars "
+# Before nans were removed, there were 2 scores of 2.5, 3, 3.5
+# This suggests there is variability, but some level of consistency with the movies being above average
+# After nans were removed, 4/6 have a score 3.5 with 2 others having a score of 2.5
+
+swT1, swP1 = stats.ttest_ind(starWarsRatings2[:,0], starWarsRatings2[:,1]) # NOT Significant, p = ~0.933
+swT2, swP2 = stats.ttest_ind(starWarsRatings2[:,1], starWarsRatings2[:,2]) # NOT Significant, p = ~0.223
+swT3, swP3 = stats.ttest_ind(starWarsRatings2[:,2], starWarsRatings2[:,3]) # HIGHLY Significant, p = ~1.982*e-14
+swT4, swP4 = stats.ttest_ind(starWarsRatings2[:,4], starWarsRatings2[:,5]) # HIGHLY Significant, p =~4.667*e-14
+# There was a statistically significant dip in reviews from 3 and 4, but a rise back up between 4 and 5
+# Thus, there is some inconsistency between the films, with up and down fluctuations
+
+
+" Harry Potter "
+# The medians are all 3.5 for all 4/4 movies, before and after nan removal
+# Thus, it can be assumed they are viewed as consisted
+
+" Matrix "
+# Both before and after had movies ranked as 3.5, 3, 3
+# This suggests continuity but the sequals not being as great as the first
+
+
+mT, mP = stats.ttest_ind(matrixRatings2[:,0], matrixRatings2[:,1]) # HIGHLY Significant, p = ~2.622*e-7
+# There is a highly significant different between movies 1 and 2 and 1 and 3
+# All were fairly well received, but the sequels not as much as the original
+
+
+" Indiana Jones "
+# 3,3,3,2.5 and 3.25,3,3,2.5 for before/after respectively
+# This suggests that the movies were generally well received with low variability
+# But people who watched all 3 liked the first more
+
+ijT1, ijP1 = stats.ttest_ind(indianaJonesRatings2[:,0], indianaJonesRatings2[:,3]) # HIGHLY Significant, p = ~2.09*e-11
+ijT2, ijP2 = stats.ttest_ind(indianaJonesRatings2[:,2], indianaJonesRatings2[:,3]) # HIGHLY Significant, p = ~1.04*e-7
+# Fairly consistent until the last film which is statistically rated lower than the others
+
+
+" Jurassic Park "
+# 3,3,3 before and 3.5,3,3 which suggests there isn't that much variability
+# But people who watched all 3 liked the first more
+
+jpT, jpP = stats.ttest_ind(jurassicParkRatings2[:,0], jurassicParkRatings2[:,1]) # Highly Significant, p = ~0.004
+# All movies were well received, but the sequels were not as highly received as the first
+
+
+" Pirates of the Caribbean "
+# 3,3,3 for both before/after. Suggests continuity and above average likeability
+
+
+" Toy Story "
+# 3.5,3.5,3.5 for both before/after. Suggests continuity and high likeability
+
+
+" Batman "
+# 3,2.5,3.5 for both before/after. Suggests inconsitency between films, with the third being more redeeming
+
+bT1, bP1 = stats.ttest_ind(batmanRatings2[:,0], batmanRatings2[:,1]) # Highly Significant, p = ~4.340*e-7
+bT2, bP2 = stats.ttest_ind(batmanRatings2[:,1], batmanRatings2[:,2]) # Highly Significant, p = ~2.970*e-18
+bT3, bP3 = stats.ttest_ind(batmanRatings2[:,0], batmanRatings2[:,2]) # Highly Significant, p = ~5.131*e-5
+# This suggests there is a dip in quality from the original to the first sequel, but the third is the most popular
+
+
+#%% 7D) Creating a Graphic for the Data (Bar Graph)
+
+# Since Star Wars is the only Franchise with a lot of variation, we will use it as an example
+# Create lists for the plot
+swMoviesDisplay = ['Episode IV','Episode V','Episode VI','Episode 1','Episode II','Episode VII']
+colours = ['indianred', 'slateblue', 'sandybrown', 'lightgreen', 'orchid', 'coral']
+x_pos = np.arange(len(swMoviesDisplay))
+
+# Build the plot
+fig, ax = plt.subplots()
+ax.bar(x_pos, starWarsMedians, align='center', color=colours)
+ax.set_ylabel('Ratings of Star Wars Movies',fontsize=20)
+ax.set_xticks(x_pos)
+ax.set_xticklabels(swMoviesDisplay)
+ax.set_title('Ratings',fontsize=30)
+ax.yaxis.grid(True)
+
+# Save the figure and show
+plt.tight_layout()
+plt.show()
+
+#%% 8) Prediction Model (Reg/Sup Learn) for Movies Based on Personality Factors
+
+"Q8: Build a prediction model of your choice (regression or supervised learning) to predict movie ratings of 'Saw (2004)' from personality factors only. Make sure to use cross-validation methods to avoid overfitting and characterize the accuracy of your model."
+# Goals:
+# A) Isolate the Personality Questions, Find their Medians, Remove NaNs
+# B) Split the Saw Viewers by Personality Traits
+# C) Create a Logistic Regression
+
+#%% 8A) Isolate the Personality Questions, Find their Medians, Remove NaNs
+
+q1Median = np.nanmedian(allMovieExperiences[:, 6]) #5.0
+q2Median = np.nanmedian(allMovieExperiences[:, 7]) #4.0
+
+#%% 8B) Split the Saw Viewers by Personality Traits
+
+#Saw (2004)
+print(df.columns.tolist().index('Saw (2004)')) # index 341
+
+sawTrait = []
+sawNoTrait = []
+
+sawRatings = data[:,341]
+counter = 0
+cIndex = 0
+traitsSaw = []
+for ii in range(1097):
+    if np.isfinite(sawRatings[ii]):
+        if allMovieExperiences[cIndex,6] >= 5.0 or allMovieExperiences[cIndex,7] >= 4.0:
+            sawTrait.append(cIndex)
+            traitsSaw.append(0)
+        else:
+            sawNoTrait.append(cIndex)
+            traitsSaw.append(1)
+    cIndex+=1
+
+sawTrait = np.array(sawTrait)
+sawNoTrait = np.array(sawNoTrait)
+traitsSaw = np.array(traitsSaw)
+sawRatings = sawRatings[~(np.isnan(sawRatings))]
+
+#%% 8C) Create a Logistic Regression
+
+x = np.isfinite(sawRatings).reshape(-1, 1)
+y = traitsSaw
+
+# Fit model:
+model = LogisticRegression().fit(x,y)
+
+#%%
+
